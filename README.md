@@ -1,5 +1,7 @@
 # SCINTEL
 
+**[在线试玩](https://eddiewho.github.io/scintel/)** · [GitHub 仓库](https://github.com/EddieWho/scintel)
+
 一个可部署到 GitHub Pages 的供应链调查教学游戏。玩家在有限时间与预算下调查 K2 产品过热事件，阅读证据、比较批次数据、检验竞争假设，并提交处置方案。首版界面为中文，全部企业和数据均为虚构。
 
 ## 本地运行
