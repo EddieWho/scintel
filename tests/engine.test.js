@@ -41,6 +41,20 @@ const conclude = (state, options = {}) => {
 const read = (state, ...evidenceIds) =>
   evidenceIds.reduce((next, evidenceId) => markRead(next, evidenceId), state);
 
+const reviewFixture = () => {
+  let state = started("all");
+  state = takeAction(state, "trace");
+  state = takeAction(state, "audit");
+  state = takeAction(state, "machine");
+  state = takeAction(state, "lab");
+  state = read(state, "E01", "E02", "E03", "E04", "E05", "E06");
+  state = linkEvidence(state, "E04", "supplier", "supports");
+  state = linkEvidence(state, "E05", "supplier", "supports");
+  state = linkEvidence(state, "E05", "machine", "supports");
+  state = linkEvidence(state, "E06", "supplier", "contradicts");
+  return conclude(state);
+};
+
 test("案件数据与资源规则保持固定，行动不可重复", () => {
   assert.equal(CASE.id, "counterfeit-001");
   assert.equal(CASE.initialBudget, 100);
@@ -261,4 +275,129 @@ test("批次数据包含两个可比较的供应来源", () => {
   assert.equal(suppliers.includes("启源电子"), true);
   const table = CASE.evidence.find((item) => item.id === "E03").table;
   assert.equal(table.headers.includes("供应商"), true);
+});
+
+test("评分结果保持既有数值，解释字段不改变类别分数", () => {
+  let state = takeAction(takeAction(started(), "trace"), "audit");
+  state = read(state, "E01", "E03", "E04", "E05", "E06");
+  for (const evidenceId of ["E03", "E04", "E05", "E06"]) {
+    state = linkEvidence(state, evidenceId, "supplier", "supports");
+  }
+  const result = scoreCase(conclude(state));
+  assert.equal(result.total, 89);
+  assert.deepEqual(
+    result.categories.map((category) => [
+      category.id,
+      category.score,
+      category.max,
+    ]),
+    [
+      ["evidence", 36, 40],
+      ["hypothesis", 23, 30],
+      ["decision", 30, 30],
+    ],
+  );
+  assert.equal(result.categories[0].label, "证据运用");
+  for (const category of result.categories) {
+    assert.equal(typeof category.description, "string");
+    assert.equal(typeof category.calculation, "string");
+    assert.equal(typeof category.feedback, "string");
+  }
+  assert.equal(result.categories[0].feedback.includes("原始权重"), false);
+  assert.equal(result.categories[0].feedback.includes("归一化"), false);
+});
+
+test("证据复核覆盖背景、未读、未链接、正确、混合和方向错误关系", () => {
+  const result = scoreCase(reviewFixture());
+  const review = result.evidenceReview;
+  assert.deepEqual(review.summary, {
+    readCount: 6,
+    correctEvidenceCount: 2,
+    incorrectLinkCount: 2,
+    unlinkedReadCount: 1,
+    unreadCount: 2,
+  });
+  assert.deepEqual(
+    review.items.map((item) => [item.id, item.status]),
+    [
+      ["E01", "context"],
+      ["E02", "context"],
+      ["E03", "read"],
+      ["E04", "used"],
+      ["E05", "needs_review"],
+      ["E06", "needs_review"],
+      ["E07", "unread"],
+      ["E08", "unread"],
+    ],
+  );
+  assert.equal(
+    review.items
+      .find((item) => item.id === "E02")
+      .explanation.includes("不能单独证明"),
+    true,
+  );
+  assert.equal(
+    review.items.find((item) => item.id === "E06").userLinks[0].correct,
+    false,
+  );
+  assert.equal(
+    review.items
+      .find((item) => item.id === "E06")
+      .userLinks[0].explanation.includes("支持"),
+    true,
+  );
+  assert.equal(
+    review.items
+      .find((item) => item.id === "E07")
+      .explanation.includes("尚未阅读"),
+    true,
+  );
+  assert.equal(
+    review.items.some((item) => item.id === "E09"),
+    false,
+  );
+  assert.equal(
+    review.items.some((item) => item.id === "E10"),
+    false,
+  );
+});
+
+test("证据条目的原始贡献按现有四分之一覆盖与错误关系扣分计算并可求和", () => {
+  const result = scoreCase(reviewFixture());
+  const raw = result.evidenceReview.items.reduce(
+    (sum, item) => sum + item.rawContribution,
+    0,
+  );
+  assert.equal(raw, 9.5);
+  assert.equal(result.categories[0].score, 16);
+});
+
+test("已提交存档往返后评分与证据复核保持一致，未提交时仍拒绝评分", () => {
+  const state = reviewFixture();
+  const result = scoreCase(state);
+  const restored = restoreState(serializeState(state));
+  assert.deepEqual(scoreCase(restored), result);
+  assert.throws(() => scoreCase(started()), /结论尚未提交/);
+});
+
+test("升级遏制的反馈同时说明首次暂停出货时间和最终措施", () => {
+  let state = started("hold");
+  state = setContainment(state, "all");
+  state = takeAction(state, "trace");
+  const feedback = scoreCase(conclude(state)).categories[2].feedback;
+  assert.equal(feedback.includes("调查开始后 0 小时开始暂停出货"), true);
+  assert.equal(feedback.includes("最终措施为“暂停全部型号出货”"), true);
+});
+
+test("选择被正确反驳的主假设时，反馈明确指出反驳关系", () => {
+  let state = takeAction(started(), "machine");
+  state = read(state, "E07");
+  state = linkEvidence(state, "E07", "machine", "contradicts");
+  const feedback = scoreCase(conclude(state, { hypothesis: "machine" }))
+    .categories[1].feedback;
+  assert.equal(feedback.includes("1 条正确反驳关系"), true);
+  assert.equal(
+    feedback.includes("这些证据在反驳你最终选择的假设，需要重新考虑结论"),
+    true,
+  );
 });

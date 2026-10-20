@@ -13,7 +13,7 @@ import {
   scoreCase,
   serializeState,
   restoreState,
-} from "./engine.js";
+} from "./engine.js?v=1.0.1";
 
 const STORAGE = "scintel:counterfeit:1";
 const routes = [
@@ -92,6 +92,11 @@ const ui = {
   menu: false,
   search: "",
   evidenceType: "all",
+  evidenceAction: getEvidenceAction(),
+  linkEvidenceId: null,
+  linkHypothesisId: null,
+  linkRelation: "supports",
+  focusLink: false,
   groupBy: "supplier",
   supplier: "all",
   factory: "all",
@@ -117,8 +122,39 @@ let pendingConfirm = null;
 let toastTimer;
 
 function getRoute() {
-  const route = location.hash.slice(1);
+  const route = location.hash.slice(1).split("?")[0];
   return routes.some((r) => r[0] === route) ? route : "overview";
+}
+function getEvidenceAction() {
+  if (getRoute() !== "evidence") return null;
+  const id = new URLSearchParams(location.hash.split("?")[1] || "").get("from");
+  return state.actions.includes(id) &&
+    CASE.investigations.some((a) => a.id === id)
+    ? id
+    : null;
+}
+function actionEvidence(id) {
+  const action = CASE.investigations.find((a) => a.id === id);
+  if (!action || !state.actions.includes(id)) return;
+  ui.search = "";
+  ui.evidenceType = "all";
+  go(`evidence?from=${encodeURIComponent(id)}`);
+}
+function focusRoute() {
+  if (ui.route === "hypotheses" && ui.focusLink) {
+    ui.focusLink = false;
+    const form = document.querySelector("#link-form");
+    form?.scrollIntoView({ block: "center" });
+    form?.querySelector('[name="evidence"]')?.focus({ preventScroll: true });
+  } else {
+    document
+      .querySelector(
+        ui.route === "evidence" && ui.evidenceAction
+          ? "#evidence-context"
+          : "#main",
+      )
+      ?.focus({ preventScroll: true });
+  }
 }
 function save() {
   try {
@@ -150,13 +186,20 @@ function toast(message) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove("visible"), 4200);
 }
+function dismissToast() {
+  clearTimeout(toastTimer);
+  document.querySelector("#toast").classList.remove("visible");
+}
 function go(route) {
   ui.menu = false;
-  if (location.hash === `#${route}`) {
-    ui.route = route;
-    render();
-  } else location.hash = route;
+  dismissToast();
   window.scrollTo({ top: 0, behavior: "instant" });
+  if (location.hash === `#${route}`) {
+    ui.route = getRoute();
+    ui.evidenceAction = getEvidenceAction();
+    render();
+    focusRoute();
+  } else location.hash = route;
 }
 const button = (label, action, attrs = "", cls = "btn") =>
   `<button class="${cls}" data-action="${action}" ${attrs}>${label}</button>`;
@@ -174,6 +217,7 @@ function resourceBar() {
 function render() {
   document.title = `${routes.find((r) => r[0] === ui.route)?.[1]} · SCINTEL`;
   const completed = Boolean(state.decision);
+  const unread = state.unlocked.filter((id) => !state.read.includes(id)).length;
   const content = {
     overview,
     investigate,
@@ -187,7 +231,7 @@ function render() {
     <aside class="sidebar ${ui.menu ? "mobile-open" : ""}" aria-label="主导航">
       <a class="brand" href="#overview"><img src="./favicon.svg" alt="" width="34" height="34"><span>SCINTEL<span class="brand-sub">SUPPLY CHAIN INTELLIGENCE</span></span></a>
       <div class="workspace-label">调查工作区 <span>01</span></div>
-      <nav>${routes.map(([id, label, glyph], index) => `<button data-route="${id}" aria-label="${label}" title="${label}" class="nav-item ${ui.route === id ? "active" : ""}" ${ui.route === id ? 'aria-current="page"' : ""}>${icon(glyph)}<span>${label}</span><small>${id === "evidence" ? String(state.unlocked.length).padStart(2, "0") : id === "report" && !completed ? icon("lock") : String(index + 1).padStart(2, "0")}</small></button>`).join("")}</nav>
+      <nav>${routes.map(([id, label, glyph], index) => `<button data-route="${id}" aria-label="${label}" title="${label}" class="nav-item ${ui.route === id ? "active" : ""}" ${ui.route === id ? 'aria-current="page"' : ""}>${icon(glyph)}<span>${label}</span><small>${id === "evidence" ? `${unread} 未读` : id === "report" && !completed ? icon("lock") : String(index + 1).padStart(2, "0")}</small></button>`).join("")}</nav>
       <div class="sidebar-bottom"><div class="case-label"><span class="live-dot"></span> ${completed ? "调查已归档" : state.started ? "调查进行中" : "案件待启动"}</div><strong>CASE / 001</strong><p>假冒零部件危机</p><div class="sidebar-progress"><i style="width:${completed ? 100 : state.started ? 15 + state.actions.length * 12 : 0}%"></i></div><span class="sidebar-note">好的判断，始于好的证据。</span></div>
     </aside>
     <div class="workspace">
@@ -220,6 +264,15 @@ function containmentPanel() {
     })
     .join("")}</div></section>`;
 }
+function recentInvestigation() {
+  const id = state.actions.at(-1);
+  if (!id) return "";
+  const action = CASE.investigations.find((a) => a.id === id);
+  const unread = action.evidenceIds.filter(
+    (e) => !state.read.includes(e),
+  ).length;
+  return `<section class="investigation-result" aria-label="最近完成的调查"><div><span class="eyebrow">调查完成 · 材料已送达</span><h2>${esc(action.title)}</h2><p>${action.evidenceIds.join("、")} · ${action.evidenceIds.length} 份材料${unread ? `，还有 ${unread} 份未读` : "，已全部阅读"}。${unread ? "先看看这次调查带回了什么。" : "可以继续比较数据或检验假设。"}</p></div>${button("阅读本次材料 " + icon("arrow"), "action-evidence", `data-id="${id}"`, "btn primary")}</section>`;
+}
 function investigate() {
   if (!state.started)
     return (
@@ -240,9 +293,12 @@ function investigate() {
       actionLog() +
       navButton("查看复盘报告", "report")
     );
-  return `${heading("INVESTIGATION", "下一步，查什么？", "选择能区分不同解释的调查。获取材料后，记得阅读并将它们连接到假设。")}${resourceBar()}${containmentPanel()}<div class="section-heading section-block"><h2>可用调查行动</h2><span class="muted">${state.actions.length} / ${CASE.investigations.length} 已完成</span></div><div class="action-grid">${CASE.investigations
+  return `${heading("INVESTIGATION", "下一步，查什么？", "选择能区分不同解释的调查。获取材料后，记得阅读并将它们连接到假设。")}${resourceBar()}${recentInvestigation()}${containmentPanel()}<div class="section-heading section-block"><h2>可用调查行动</h2><span class="muted">${state.actions.length} / ${CASE.investigations.length} 已完成</span></div><div class="action-grid">${CASE.investigations
     .map((a, i) => {
       const done = state.actions.includes(a.id);
+      const unread = a.evidenceIds.filter(
+        (id) => !state.read.includes(id),
+      ).length;
       const reason = !state.containment
         ? "请先选择风险处置"
         : state.budget < a.cost
@@ -250,7 +306,7 @@ function investigate() {
           : state.hoursLeft < a.hours
             ? "剩余时间不足"
             : "";
-      return `<article class="action-card ${done ? "completed" : ""}"><div class="card-top"><span class="action-number">INV / 0${i + 1}</span>${done ? '<span class="tag green">' + icon("check") + " 已完成</span>" : icon(i === 0 ? "chart" : i === 2 ? "scale" : "search")}</div><h2>${esc(a.title)}</h2><p>${esc(a.description)}</p><div class="investigation-question"><span>验证问题</span>${esc(a.question)}</div><div class="action-cost"><span>${icon("wallet")} ${a.cost} 预算</span><span>${icon("clock")} ${a.hours} 小时</span><span>${a.evidenceIds.length} 份证据</span></div>${done ? navButton("阅读调查材料", "evidence", "btn secondary full") : button(reason || "开展调查 " + icon("arrow"), "investigate", `data-id="${a.id}" ${reason ? "disabled" : ""}`, "btn primary full")}</article>`;
+      return `<article class="action-card ${done ? "completed" : ""}"><div class="card-top"><span class="action-number">INV / 0${i + 1}</span>${done ? `<span class="tag ${unread ? "orange" : "green"}">${unread ? `${unread} 份材料未读` : icon("check") + " 已完成"}</span>` : icon(i === 0 ? "chart" : i === 2 ? "scale" : "search")}</div><h2>${esc(a.title)}</h2><p>${esc(a.description)}</p><div class="investigation-question"><span>验证问题</span>${esc(a.question)}</div><div class="action-cost"><span>${icon("wallet")} ${a.cost} 预算</span><span>${icon("clock")} ${a.hours} 小时</span><span>${a.evidenceIds.length} 份证据</span></div>${done ? button("阅读调查材料 " + icon("arrow"), "action-evidence", `data-id="${a.id}"`, "btn secondary full") : button(reason || "开展调查 " + icon("arrow"), "investigate", `data-id="${a.id}" ${reason ? "disabled" : ""}`, "btn primary full")}</article>`;
     })
     .join(
       "",
@@ -259,11 +315,18 @@ function investigate() {
 function evidenceCard(e) {
   const unlocked = state.unlocked.includes(e.id);
   const read = state.read.includes(e.id);
-  return `<article class="evidence-card ${unlocked ? "" : "locked"}"><div class="card-top"><span class="document-icon">${icon(unlocked ? (e.type.includes("数据") ? "chart" : "file") : "lock")}</span><span class="tag ${read ? "neutral" : unlocked ? "green" : "neutral"}">${read ? "已阅读" : unlocked ? "待阅读" : "待调查"}</span></div><div class="evidence-id">${e.id} <span> / ${esc(e.type)}</span></div><h3>${esc(e.title)}</h3><p>${unlocked ? esc(e.summary) : "完成相关调查后，材料将送达证据档案。"}</p><div class="evidence-bottom"><span>${unlocked ? esc(e.source) : "需要获取权限"}</span>${unlocked ? button("查看 " + icon("arrow"), "open-evidence", `data-id="${e.id}" aria-label="查看 ${esc(e.title)}"`, "text-link") : icon("lock")}</div></article>`;
+  const highlighted =
+    ui.route === "evidence" &&
+    CASE.investigations
+      .find((a) => a.id === ui.evidenceAction)
+      ?.evidenceIds.includes(e.id);
+  return `<article class="evidence-card ${unlocked ? "" : "locked"} ${highlighted ? "is-highlighted" : ""}" data-evidence-id="${e.id}"><div class="card-top"><span class="document-icon">${icon(unlocked ? (e.type.includes("数据") ? "chart" : "file") : "lock")}</span><span class="tag ${read ? "neutral" : highlighted ? "orange" : unlocked ? "green" : "neutral"}">${highlighted && !read ? "本次新增 · 未读" : read ? "已阅读" : unlocked ? "待阅读" : "待调查"}</span></div><div class="evidence-id">${e.id} <span> / ${esc(e.type)}</span></div><h3>${esc(e.title)}</h3><p>${unlocked ? esc(e.summary) : "完成相关调查后，材料将送达证据档案。"}</p><div class="evidence-bottom"><span>${unlocked ? esc(e.source) : "需要获取权限"}</span>${unlocked ? button("查看 " + icon("arrow"), "open-evidence", `data-id="${e.id}" aria-label="查看 ${esc(e.title)}"`, "text-link") : icon("lock")}</div></article>`;
 }
 function filteredEvidence() {
+  const action = CASE.investigations.find((a) => a.id === ui.evidenceAction);
   return CASE.evidence.filter(
     (e) =>
+      (!action || action.evidenceIds.includes(e.id)) &&
       (ui.evidenceType === "all" ||
         (ui.evidenceType === "unlocked"
           ? state.unlocked.includes(e.id)
@@ -276,16 +339,31 @@ function filteredEvidence() {
   );
 }
 function evidence() {
-  return `${heading("EVIDENCE LIBRARY", "证据不会自己说话", "阅读来源、时间与局限性。看见一个线索，不等于已经证明一个解释。", '<span class="tag green">' + state.unlocked.length + " 份已获取</span>")}<div class="filter-bar"><label class="search-field">${icon("search")}<input type="search" id="evidence-search" placeholder="搜索编号、标题或类型" aria-label="搜索证据" value="${esc(ui.search)}"></label><label class="select-label">显示<select id="evidence-filter"><option value="all" ${ui.evidenceType === "all" ? "selected" : ""}>全部材料</option><option value="unlocked" ${ui.evidenceType === "unlocked" ? "selected" : ""}>已获取</option><option value="unread" ${ui.evidenceType === "unread" ? "selected" : ""}>尚未阅读</option><option value="locked" ${ui.evidenceType === "locked" ? "selected" : ""}>尚未获取</option></select></label></div><div class="evidence-grid" id="evidence-grid">${filteredEvidence().map(evidenceCard).join("") || '<p class="muted">没有符合条件的材料。</p>'}</div>`;
+  const action = CASE.investigations.find((a) => a.id === ui.evidenceAction);
+  const unread = action?.evidenceIds.filter(
+    (id) => !state.read.includes(id),
+  ).length;
+  const context = action
+    ? `<section class="evidence-context" id="evidence-context" tabindex="-1"><div><span class="eyebrow">当前显示这次调查带回的材料</span><h2>${esc(action.title)}</h2><p>${action.evidenceIds.length} 份材料 · ${unread ? `${unread} 份未读` : "已全部阅读"}。高亮卡片都来自这次调查。</p></div>${button("查看全部材料", "all-evidence", "", "btn secondary")}</section>`
+    : "";
+  return `${heading("EVIDENCE LIBRARY", "证据不会自己说话", "阅读来源、时间与局限性。看见一个线索，不等于已经证明一个解释。", '<span class="tag green">' + state.unlocked.length + " 份已获取</span>")}${context}<div class="filter-bar"><label class="search-field">${icon("search")}<input type="search" id="evidence-search" placeholder="搜索编号、标题或类型" aria-label="搜索证据" value="${esc(ui.search)}"></label><label class="select-label">显示<select id="evidence-filter"><option value="all" ${ui.evidenceType === "all" ? "selected" : ""}>${action ? "本次材料" : "全部材料"}</option><option value="unlocked" ${ui.evidenceType === "unlocked" ? "selected" : ""}>已获取</option><option value="unread" ${ui.evidenceType === "unread" ? "selected" : ""}>尚未阅读</option><option value="locked" ${ui.evidenceType === "locked" ? "selected" : ""}>尚未获取</option></select></label></div><div class="evidence-grid" id="evidence-grid">${filteredEvidence().map(evidenceCard).join("") || '<p class="muted">没有符合条件的材料。</p>'}</div>${state.started && !state.decision ? `<div class="notice">${icon("nodes")} 阅读之后，还需要说明证据怎样支持或反驳假设。背景材料不必强行连线。${navButton("检验假设", "hypotheses", "text-link")}</div>` : ""}`;
 }
 function openEvidence(id) {
   const evidence = byEvidence(id);
   if (!evidence || !state.unlocked.includes(id)) return;
   if (!state.decision && !update((s) => markRead(s, id))) return;
+  const batch =
+    CASE.investigations.find((a) => a.id === ui.evidenceAction)?.evidenceIds ||
+    state.unlocked;
+  const next = state.decision
+    ? null
+    : batch.find((e) => e !== id && !state.read.includes(e));
   const dialog = document.querySelector("#evidence-dialog");
-  dialog.innerHTML = `<div class="dialog-top"><span class="eyebrow">EVIDENCE / ${id}</span>${button(icon("close"), "close-evidence", 'aria-label="关闭证据"', "icon-btn")}</div><span class="tag neutral">${esc(evidence.type)}</span><h2 id="evidence-title">${esc(evidence.title)}</h2><dl class="evidence-meta"><div><dt>来源</dt><dd>${esc(evidence.source)}</dd></div><div><dt>记录时间</dt><dd>${esc(evidence.date)}</dd></div><div class="wide"><dt>可靠性与局限</dt><dd>${esc(evidence.reliability)}</dd></div></dl><div class="document-body">${evidence.body.map((p) => `<p>${esc(p)}</p>`).join("")}${evidence.table ? renderTable(evidence.table.headers, evidence.table.rows) : ""}</div><div class="dialog-bottom"><span class="muted">${evidence.tags.map(esc).join(" · ")}</span>${button("前往假设检验 " + icon("arrow"), "evidence-to-hypotheses", "", "btn primary")}</div>`;
+  dialog.innerHTML = `<div class="dialog-top"><span class="eyebrow">EVIDENCE / ${id}</span>${button(icon("close"), "close-evidence", 'aria-label="关闭证据"', "icon-btn")}</div><span class="tag neutral">${esc(evidence.type)}</span><h2 id="evidence-title" tabindex="-1">${esc(evidence.title)}</h2><dl class="evidence-meta"><div><dt>来源</dt><dd>${esc(evidence.source)}</dd></div><div><dt>记录时间</dt><dd>${esc(evidence.date)}</dd></div><div class="wide"><dt>可靠性与局限</dt><dd>${esc(evidence.reliability)}</dd></div></dl><div class="document-body">${evidence.body.map((p) => `<p>${esc(p)}</p>`).join("")}${evidence.table ? renderTable(evidence.table.headers, evidence.table.rows) : ""}</div><p class="muted">${evidence.tags.map(esc).join(" · ")}</p><div class="dialog-bottom evidence-reading-actions">${next ? button(`阅读下一份 · ${next} ` + icon("arrow"), "next-evidence", `data-id="${next}"`, "btn secondary") : `<span class="muted">${state.decision ? "本次调查已归档" : ui.evidenceAction ? "本次调查材料已全部阅读" : "已获取材料已全部阅读"}</span>`}${state.started && !state.decision ? button("关联这份证据 " + icon("nodes"), "evidence-to-hypotheses", `data-id="${id}"`, "btn primary") : button("关闭材料", "close-evidence", "", "btn secondary")}</div>`;
   dialog.dataset.evidence = id;
-  dialog.showModal();
+  if (!dialog.open) dialog.showModal();
+  dialog.scrollTop = 0;
+  dialog.querySelector("#evidence-title").focus({ preventScroll: true });
 }
 function renderTable(headers, rows, caption = "") {
   return `<div class="table-scroll"><table>${caption ? `<caption>${esc(caption)}</caption>` : ""}<thead><tr>${headers.map((h) => `<th scope="col">${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${row.map((c) => `<td>${esc(c)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
@@ -376,6 +454,11 @@ function hypotheses() {
       )
     );
   const read = CASE.evidence.filter((e) => state.read.includes(e.id));
+  const selectedEvidence = read.some((e) => e.id === ui.linkEvidenceId)
+    ? ui.linkEvidenceId
+    : read[0]?.id;
+  const selectedHypothesis =
+    ui.linkHypothesisId || state.hypothesis || CASE.hypotheses[0].id;
   return `${title}${state.decision ? '<div class="notice">本次判断已提交，证据关系已锁定。</div>' : ""}<div class="hypothesis-grid">${CASE.hypotheses
     .map((h, i) => {
       const links = state.links.filter((l) => l.hypothesisId === h.id);
@@ -383,7 +466,32 @@ function hypotheses() {
     })
     .join(
       "",
-    )}</div>${!state.decision ? `<section class="panel section-block"><div class="section-heading"><div><h2>建立证据关系</h2><p class="muted">只关联你能解释的证据。无差别连线会降低评分。</p></div>${icon("nodes")}</div>${read.length ? `<form id="link-form" class="link-form"><label>已阅读的证据<select name="evidence" required>${read.map((e) => `<option value="${e.id}">${e.id} · ${esc(e.title)}</option>`).join("")}</select></label><label>关系<select name="relation"><option value="supports">支持</option><option value="contradicts">反驳</option></select></label><label>对应假设<select name="hypothesis">${CASE.hypotheses.map((h) => `<option value="${h.id}">${esc(h.title)}</option>`).join("")}</select></label><button class="btn primary" type="submit">关联证据 ${icon("nodes")}</button></form>` : `<p>阅读材料后才能关联证据。</p>${navButton("打开证据档案", "evidence")}`}</section>` : ""}<div class="notice">${icon("help")} 连接关系代表你的判断，系统不会提前揭示正确答案。${navButton("进入决策室", "decision", "text-link")}</div>`;
+    )}</div>${!state.decision ? `<section class="panel section-block"><div class="section-heading"><div><h2>建立证据关系</h2><p class="muted">这里记录你如何使用材料，计入「证据运用」40 分。阅读不会自动建立关系；背景材料可以不连线，无差别连线会扣分。</p></div>${icon("nodes")}</div>${read.length ? `<form id="link-form" class="link-form"><label>已阅读的证据<select name="evidence" required>${read.map((e) => `<option value="${e.id}" ${e.id === selectedEvidence ? "selected" : ""}>${e.id} · ${esc(e.title)}</option>`).join("")}</select></label><label>关系<select name="relation"><option value="supports" ${ui.linkRelation === "supports" ? "selected" : ""}>支持</option><option value="contradicts" ${ui.linkRelation === "contradicts" ? "selected" : ""}>反驳</option></select></label><label>对应假设<select name="hypothesis">${CASE.hypotheses.map((h) => `<option value="${h.id}" ${h.id === selectedHypothesis ? "selected" : ""}>${esc(h.title)}</option>`).join("")}</select></label><button class="btn primary" type="submit">关联证据 ${icon("nodes")}</button></form>` : `<p>阅读材料后才能关联证据。</p>${navButton("打开证据档案", "evidence")}`}</section>` : ""}<div class="notice">${icon("help")} 连接关系代表你的判断，系统不会提前揭示正确答案。${navButton("进入决策室", "decision", "text-link")}</div>`;
+}
+function decisionWarnings() {
+  const warnings = [];
+  const unread = state.unlocked.filter((id) => !state.read.includes(id));
+  if (unread.length)
+    warnings.push({
+      text: `还有 ${unread.length} 份已获取材料未读（${unread.join("、")}）。`,
+      route: "evidence",
+    });
+  if (!state.links.length)
+    warnings.push({
+      text: "尚未记录证据与假设的关系，系统还看不到你如何用材料支持判断。",
+      route: "hypotheses",
+    });
+  if (state.actions.includes("trace") && !state.analysisViews.length)
+    warnings.push({
+      text: "已获取批次数据，但还没有记录任何数据比较。",
+      route: "analytics",
+    });
+  return warnings;
+}
+function decisionChecklist(interactive = true) {
+  const warnings = decisionWarnings();
+  if (!warnings.length) return "";
+  return `<section class="decision-checklist" aria-label="提交前检查"><h3>提交前，再看一眼</h3><ul>${warnings.map((w) => `<li><span>${esc(w.text)}</span>${interactive ? navButton("返回检查", w.route, "text-link") : ""}</li>`).join("")}</ul><p>这些提醒不会阻止提交。你可以在资源有限或证据不足时作出决定，但应说明仍有哪些不确定性。</p></section>`;
 }
 function decision() {
   const title = heading(
@@ -418,10 +526,13 @@ function decision() {
           `<label class="radio-option"><input type="radio" name="${name}" value="${id}" ${ui.decision[name] === id ? "checked" : ""}><span><strong>${label}</strong><small>${descriptions[id]}</small></span></label>`,
       )
       .join("")}</div></fieldset>`;
-  return `${title}<div class="decision-layout"><form id="decision-form" class="panel">${optionGroup("response", "01 / 产品处置范围", responseLabels, { targeted: "需要有批次追踪依据，控制召回范围。", all: "覆盖范围更广，也会带来更高成本。", none: "短期直接成本低，风险可能继续累积。" })}${optionGroup("supplier", "02 / 供应来源措施", supplierLabels, { suspend: "降低涉事来源风险，但切换会影响交付。", verify: "核验前不恢复涉事来源采购，需等待调查。", keep: "保持供应连续性，来源风险仍需承担。" })}${optionGroup("inspection", "03 / 后续检验", inspectionLabels, { enhanced: "增加检测费用与交付时间，提高发现能力。", standard: "维持现有效率，也保留现有检测盲区。" })}<label class="textarea-label" for="rationale">04 / 决策依据与取舍 <span>至少 20 字</span></label><textarea id="rationale" name="rationale" rows="5" maxlength="5000" placeholder="引用具体证据，解释为什么选择这一方案，以及仍然存在的不确定性。">${esc(state.rationale)}</textarea><div class="form-bottom"><span id="rationale-count" class="muted">${state.rationale.trim().length} / 20 字起</span><button class="btn primary" type="submit">检查并提交决策 ${icon("arrow")}</button></div></form><aside class="decision-summary"><section class="panel"><div class="eyebrow">YOUR CASE SO FAR</div><h2>你的调查摘要</h2><dl><div><dt>当前判断</dt><dd>${state.hypothesis ? esc(byHypothesis(state.hypothesis).title) : "尚未选择假设"}</dd></div><div><dt>已阅读证据</dt><dd>${state.read.length} 份</dd></div><div><dt>证据关系</dt><dd>${state.links.length} 条</dd></div><div><dt>已记录分析</dt><dd>${state.analysisViews.length} 次</dd></div><div><dt>剩余资源</dt><dd>${state.budget} 预算 / ${state.hoursLeft} 小时</dd></div></dl>${navButton("检查假设与证据", "hypotheses", "text-link")}</section><div class="note-card"><h3>${icon("help")} 提交前想一想</h3><p>你排除了哪些替代解释？如果判断有误，这个方案是否仍能保护客户？</p><p>评分考察证据使用与处置。自由文字保留用于讨论，不进行自动语义打分。</p></div></aside></div>`;
+  return `${title}${decisionChecklist()}<div class="decision-layout"><form id="decision-form" class="panel">${optionGroup("response", "01 / 产品处置范围", responseLabels, { targeted: "需要有批次追踪依据，控制召回范围。", all: "覆盖范围更广，也会带来更高成本。", none: "短期直接成本低，风险可能继续累积。" })}${optionGroup("supplier", "02 / 供应来源措施", supplierLabels, { suspend: "降低涉事来源风险，但切换会影响交付。", verify: "核验前不恢复涉事来源采购，需等待调查。", keep: "保持供应连续性，来源风险仍需承担。" })}${optionGroup("inspection", "03 / 后续检验", inspectionLabels, { enhanced: "增加检测费用与交付时间，提高发现能力。", standard: "维持现有效率，也保留现有检测盲区。" })}<label class="textarea-label" for="rationale">04 / 决策依据与取舍 <span>至少 20 字</span></label><textarea id="rationale" name="rationale" rows="5" maxlength="5000" placeholder="引用具体证据，解释为什么选择这一方案，以及仍然存在的不确定性。">${esc(state.rationale)}</textarea><div class="form-bottom"><span id="rationale-count" class="muted">${state.rationale.trim().length} / 20 字起</span><button class="btn primary" type="submit">检查并提交决策 ${icon("arrow")}</button></div></form><aside class="decision-summary"><section class="panel"><div class="eyebrow">YOUR CASE SO FAR</div><h2>你的调查摘要</h2><dl><div><dt>当前判断</dt><dd>${state.hypothesis ? esc(byHypothesis(state.hypothesis).title) : "尚未选择假设"}</dd></div><div><dt>已阅读证据</dt><dd>${state.read.length} 份</dd></div><div><dt>证据关系</dt><dd>${state.links.length} 条</dd></div><div><dt>已记录分析</dt><dd>${state.analysisViews.length} 次</dd></div><div><dt>剩余资源</dt><dd>${state.budget} 预算 / ${CASE.initialBudget} · ${state.hoursLeft} 小时</dd></div></dl>${navButton("检查假设与证据", "hypotheses", "text-link")}</section><div class="note-card"><h3>${icon("help")} 提交前想一想</h3><p>你排除了哪些替代解释？如果判断有误，这个方案是否仍能保护客户？</p><p>证据运用 40 分、假设论证 30 分、决策质量 30 分。自由文字保留用于讨论，不自动评分。</p></div></aside></div>`;
 }
 function actionLog() {
   return `<ol class="activity-log">${state.log.map((l) => `<li><span>T+${l.time}h</span><p>${esc(l.message)}</p></li>`).join("") || "<li>尚无行动记录。</li>"}</ol>`;
+}
+function evidenceReviewSection(review) {
+  return `<section class="panel section-block evidence-review" aria-labelledby="evidence-review-title"><div class="section-heading"><div><div class="eyebrow">UNDERSTAND YOUR EVIDENCE SCORE</div><h2 id="evidence-review-title">证据运用明细</h2></div><span class="tag neutral">满分 40 分</span></div><p class="review-intro">这 40 分评估你如何使用材料：阅读有基础分，把关键材料正确用于支持或反驳假设会获得更多分；过度推断或关系判断错误会扣分。不同材料的重要性不同，不必收集或关联全部材料。</p><div class="review-counts"><div><strong>${review.summary.readCount}</strong><span>份已阅读</span></div><div><strong>${review.summary.correctEvidenceCount}</strong><span>份有正确关联</span></div><div><strong>${review.summary.incorrectLinkCount}</strong><span>条关系需要复核</span></div></div><ul class="evidence-review-list">${review.items.map((item) => `<li class="review-evidence ${item.status}" data-review-evidence="${item.id}"><div class="review-evidence-heading"><h3>${button(`${item.id} · ${esc(item.title)}`, "open-evidence", `data-id="${item.id}"`, "review-evidence-link")}</h3><span class="review-status ${item.status}">${esc(item.statusLabel)}</span></div><p>${esc(item.explanation)}</p>${item.userLinks.length ? `<details class="review-relations" ${item.status === "needs_review" ? "open" : ""}><summary>你记录的关系（${item.userLinks.length}）</summary><ul>${item.userLinks.map((link) => `<li><strong>${link.correct ? "✓" : "需复核"} ${link.relation === "supports" ? "支持" : "反驳"} · ${esc(byHypothesis(link.hypothesisId).title)}</strong><p>${esc(link.explanation)}</p></li>`).join("")}</ul></details>` : ""}</li>`).join("")}</ul></section>`;
 }
 function report() {
   const title = heading(
@@ -439,7 +550,7 @@ function report() {
       )
     );
   const r = scoreCase(state);
-  return `${title}<section class="report-hero"><div><span class="eyebrow">INVESTIGATION COMPLETE</span><h2>${esc(r.outcome.headline)}</h2><p>${esc(r.outcome.summary)}</p><div class="report-actions">${button(icon("download") + " 下载调查报告", "export-report", "", "btn light")}${button("导出行动记录", "export-json", "", "btn outline-light")}</div><small>报告为 HTML 文件，可在浏览器中打印为 PDF。</small></div><div class="score-ring" style="--score:${r.total * 3.6}deg"><div><strong>${r.total}<span>/100</span></strong><small>调查过程评分</small></div></div></section><div class="score-grid">${r.categories.map((c) => `<section class="panel score-card"><div class="section-heading"><h2>${esc(c.label)}</h2><strong>${c.score}<small> / ${c.max}</small></strong></div><div class="meter"><i style="width:${(c.score / c.max) * 100}%"></i></div><p>${esc(c.feedback)}</p></section>`).join("")}</div><section class="panel section-block"><div class="section-heading"><h2>方案后果</h2><span class="tag neutral">教学模型估算</span></div><div class="outcome-grid"><div><span>处置成本</span><strong>¥${fmt(r.outcome.cost)}</strong></div><div><span>额外交付时间</span><strong>${r.outcome.leadTimeDays} 天</strong></div><div><span>客户风险</span><strong>${esc(r.outcome.customerRisk)}</strong></div></div><p class="hint">这些是固定教学规则下的模拟结果，不代表真实业务预测。具体计算规则见项目说明。</p></section><section class="panel section-block truth-panel"><div class="eyebrow">THE STORY BEHIND THE SIGNAL</div><h2>${esc(r.truth.title)}</h2>${r.truth.explanation.map((p) => `<p>${esc(p)}</p>`).join("")}</section><div class="review-columns"><section class="panel"><h2>有依据的做法</h2><ul class="review-list">${r.strengths.map((s) => `<li>${esc(s)}</li>`).join("") || "<li>本次尚未形成充分的证据链。</li>"}</ul></section><section class="panel"><h2>值得再追问的地方</h2><ul class="review-list">${r.missed.map((s) => `<li>${esc(s)}</li>`).join("") || "<li>关键调查要素已覆盖。尝试用更少资源完成下一次调查。</li>"}</ul></section></div><section class="panel section-block"><label class="textarea-label" for="reflection">调查反思 <span>保留在下载报告中，不自动评分</span></label><textarea id="reflection" rows="4" maxlength="5000" placeholder="哪条证据改变了你的判断？你可能忽略了什么？如果再来一次，会怎样分配调查资源？">${esc(state.reflection)}</textarea></section><section class="panel section-block"><div class="section-heading"><h2>完整行动时间线</h2><span class="muted">时间按行动推进</span></div>${actionLog()}</section>`;
+  return `${title}<section class="report-hero"><div><span class="eyebrow">INVESTIGATION COMPLETE</span><h2>${esc(r.outcome.headline)}</h2><p>你用了 ${CASE.initialHours - state.hoursLeft} 小时，完成 ${state.actions.length} 项调查，阅读 ${state.read.length} 份材料并记录 ${state.links.length} 条证据关系。下面分别回顾你的判断依据与处置后果。</p><div class="report-actions">${button(icon("download") + " 下载调查报告", "export-report", "", "btn light")}${button("导出行动记录", "export-json", "", "btn outline-light")}</div><small>报告为 HTML 文件，可在浏览器中打印为 PDF。</small></div><div class="score-ring" style="--score:${r.total * 3.6}deg"><div><strong>${r.total}<span>/100</span></strong><small>调查过程评分</small></div></div></section><div class="score-grid">${r.categories.map((c) => `<section class="panel score-card" data-score-category="${c.id}"><div class="section-heading"><h2>${esc(c.label)}</h2><strong>${c.score}<small> / ${c.max}</small></strong></div><p class="score-description">${esc(c.description)}</p><div class="meter"><i style="width:${(c.score / c.max) * 100}%"></i></div><p>${esc(c.feedback)}</p><details class="score-calculation"><summary>查看计算方式</summary><p>${esc(c.calculation)}</p></details></section>`).join("")}</div>${evidenceReviewSection(r.evidenceReview)}<section class="panel section-block decision-recap"><div class="section-heading"><h2>你的最终方案</h2><span class="tag neutral">已提交</span></div><dl><div><dt>当前判断</dt><dd>${esc(byHypothesis(state.hypothesis).title)}</dd></div><div><dt>产品处置</dt><dd>${responseLabels[state.decision.response]}</dd></div><div><dt>供应措施</dt><dd>${supplierLabels[state.decision.supplier]}</dd></div><div><dt>检验安排</dt><dd>${inspectionLabels[state.decision.inspection]}</dd></div></dl><h3>你给出的理由</h3><p class="submitted-rationale">${esc(state.rationale)}</p><p class="hint">自由文字保留供你和教师讨论，没有自动进行语义评分。</p></section><section class="panel section-block"><div class="section-heading"><h2>方案后果</h2><span class="tag neutral">教学模型估算</span></div><div class="outcome-grid"><div><span>处置成本</span><strong>¥${fmt(r.outcome.cost)}</strong></div><div><span>额外交付时间</span><strong>${r.outcome.leadTimeDays} 天</strong></div><div><span>客户风险</span><strong>${esc(r.outcome.customerRisk)}</strong></div></div><p class="hint">经营后果与上面的过程评分分开展示。较低成本不代表更好的判断；这里的结果来自固定教学模型。</p><details class="score-calculation"><summary>查看后果的计算依据</summary><p>${esc(r.outcome.summary)}</p></details></section><section class="panel section-block truth-panel"><div class="eyebrow">THE STORY BEHIND THE SIGNAL</div><h2>${esc(r.truth.title)}</h2>${r.truth.explanation.map((p) => `<p>${esc(p)}</p>`).join("")}</section><div class="review-columns"><section class="panel"><h2>有依据的做法</h2><ul class="review-list">${r.strengths.map((s) => `<li>${esc(s)}</li>`).join("") || "<li>本次尚未形成充分的证据链。</li>"}</ul></section><section class="panel"><h2>值得再追问的地方</h2><ul class="review-list">${r.missed.map((s) => `<li>${esc(s)}</li>`).join("") || "<li>关键调查要素已覆盖。尝试用更少资源完成下一次调查。</li>"}</ul></section></div><section class="panel section-block"><label class="textarea-label" for="reflection">调查反思 <span>保留在下载报告中，不自动评分</span></label><textarea id="reflection" rows="4" maxlength="5000" placeholder="哪条证据改变了你的判断？你可能忽略了什么？如果再来一次，会怎样分配调查资源？">${esc(state.reflection)}</textarea></section><section class="panel section-block"><div class="section-heading"><h2>完整行动时间线</h2><span class="muted">时间按行动推进</span></div>${actionLog()}</section>`;
 }
 function confirm(title, body, label, action, destructive = false) {
   const dialog = document.querySelector("#confirm-dialog");
@@ -457,6 +568,20 @@ function help() {
 }
 function reportHTML() {
   const r = scoreCase(state);
+  const evidenceReview = renderTable(
+    ["材料", "使用情况", "说明", "你记录的关系"],
+    r.evidenceReview.items.map((item) => [
+      `${item.id} · ${item.title}`,
+      item.statusLabel,
+      item.explanation,
+      item.userLinks
+        .map(
+          (link) =>
+            `${link.relation === "supports" ? "支持" : "反驳"} ${byHypothesis(link.hypothesisId).title}：${link.explanation}`,
+        )
+        .join("；") || "未关联",
+    ]),
+  );
   const analysisTable = state.actions.includes("trace")
     ? renderTable(
         ["批次", "供应商", "工厂", "出货", "退货", "退货率", "抽检 / 不合格"],
@@ -480,8 +605,12 @@ function reportHTML() {
   ]);
   return `<!doctype html><html lang="zh-CN"><meta charset="UTF-8"><meta name="viewport" content="width=device-width"><title>SCINTEL 调查报告</title><style>body{font-family:system-ui,sans-serif;max-width:900px;margin:48px auto;padding:0 24px;color:#24382f;line-height:1.8}h1,h2,h3{line-height:1.3}h2{margin-top:36px}table{border-collapse:collapse;width:100%;font-size:13px}th,td{border:1px solid #cdd5cf;text-align:left;padding:8px}th{background:#f0f3ee}.table-scroll{overflow:auto}p{white-space:pre-wrap}small{color:#526456}li{margin:8px 0}@media print{body{margin:0;max-width:none}.table-scroll{overflow:visible}tr{break-inside:avoid}h2{break-after:avoid}}</style><body><h1>SCINTEL 供应链调查报告</h1><p>案例：假冒零部件危机 / ${esc(CASE.id)} · 版本 ${CASE.version}</p><small>全部企业与数据为虚构。过程评分 ${r.total}/100；自由文字未自动评分。报告由浏览器生成，可打印为 PDF。</small><h2>决策与依据</h2><p>当前判断：${esc(byHypothesis(state.hypothesis).title)}<br>产品处置：${responseLabels[state.decision.response]}<br>供应措施：${supplierLabels[state.decision.supplier]}<br>检验措施：${inspectionLabels[state.decision.inspection]}</p><p>${esc(state.rationale)}</p><h2>过程评分</h2>${renderTable(
     ["维度", "得分", "解释"],
-    r.categories.map((c) => [c.label, `${c.score}/${c.max}`, c.feedback]),
-  )}<h2>模拟后果</h2><p>${esc(r.outcome.headline)}\n${esc(r.outcome.summary)}\n处置成本：¥${fmt(r.outcome.cost)}；额外交付：${r.outcome.leadTimeDays} 天；客户风险：${esc(r.outcome.customerRisk)}</p><small>固定教学模型，不代表真实业务预测。</small><h2>证据登记表</h2>${renderTable(
+    r.categories.map((c) => [
+      c.label,
+      `${c.score}/${c.max}`,
+      `${c.description} ${c.feedback}`,
+    ]),
+  )}<details><summary>查看评分计算方式</summary><ul>${r.categories.map((c) => `<li>${esc(c.label)}：${esc(c.calculation)}</li>`).join("")}</ul></details><h2>证据运用明细</h2><p>阅读有基础分，把关键材料正确用于支持或反驳假设会获得更多分；错误关系会扣分。不同材料的重要性不同，不必收集或关联全部材料。</p>${evidenceReview}<h2>模拟后果</h2><p>${esc(r.outcome.headline)}\n${esc(r.outcome.summary)}\n处置成本：¥${fmt(r.outcome.cost)}；额外交付：${r.outcome.leadTimeDays} 天；客户风险：${esc(r.outcome.customerRisk)}</p><small>固定教学模型，不代表真实业务预测。</small><h2>证据登记表</h2>${renderTable(
     ["编号", "标题", "来源", "日期", "局限", "已阅读"],
     CASE.evidence
       .filter((e) => state.unlocked.includes(e.id))
@@ -537,6 +666,11 @@ document.addEventListener("click", (event) => {
         };
         ui.search = "";
         ui.evidenceType = "all";
+        ui.evidenceAction = null;
+        ui.linkEvidenceId = null;
+        ui.linkHypothesisId = null;
+        ui.linkRelation = "supports";
+        ui.focusLink = false;
         save();
         go("overview");
         toast("已建立新调查。");
@@ -551,21 +685,36 @@ document.addEventListener("click", (event) => {
       `开展${esc(a.title)}？`,
       `<p>${esc(a.question)}</p><div class="notice">消耗 <strong>${a.cost} 预算</strong> 与 <strong>${a.hours} 小时</strong>，获得 ${a.evidenceIds.length} 份材料。调查期间会按当前处置累积风险。</div>`,
       "确认开展调查",
-      () =>
-        update(
-          (s) => takeAction(s, id),
-          `调查完成，${a.evidenceIds.length} 份新材料已送达证据档案。`,
-        ),
+      () => {
+        if (
+          update(
+            (s) => takeAction(s, id),
+            `调查完成，${a.evidenceIds.length} 份新材料已送达证据档案。`,
+          )
+        )
+          document
+            .querySelector(".investigation-result")
+            ?.scrollIntoView({ block: "center" });
+      },
     );
-  } else if (action === "open-evidence") openEvidence(id);
+  } else if (action === "action-evidence") actionEvidence(id);
+  else if (action === "all-evidence") {
+    ui.search = "";
+    ui.evidenceType = "all";
+    go("evidence");
+  } else if (action === "open-evidence" || action === "next-evidence")
+    openEvidence(id);
   else if (action === "close-evidence")
     document.querySelector("#evidence-dialog").close();
   else if (action === "evidence-to-hypotheses") {
+    ui.linkEvidenceId = id;
+    ui.focusLink = true;
     document.querySelector("#evidence-dialog").close();
     go("hypotheses");
-  } else if (action === "choose-hypothesis")
+  } else if (action === "choose-hypothesis") {
+    ui.linkHypothesisId = id;
     update((s) => chooseHypothesis(s, id), "当前假设已更新。");
-  else if (action === "unlink")
+  } else if (action === "unlink")
     update(
       (s) =>
         linkEvidence(
@@ -616,6 +765,9 @@ document.addEventListener("submit", (event) => {
   if (event.target.id === "link-form") {
     event.preventDefault();
     const data = new FormData(event.target);
+    ui.linkEvidenceId = data.get("evidence");
+    ui.linkHypothesisId = data.get("hypothesis");
+    ui.linkRelation = data.get("relation");
     update(
       (s) =>
         linkEvidence(
@@ -640,7 +792,7 @@ document.addEventListener("submit", (event) => {
     const d = { ...ui.decision };
     confirm(
       "提交最终处置方案？",
-      `<p>提交后将结束调查，锁定行动和证据关系，并揭示案例真相。</p><ul><li>${responseLabels[d.response]}</li><li>${supplierLabels[d.supplier]}</li><li>${inspectionLabels[d.inspection]}</li></ul>`,
+      `<p>提交后将结束调查，锁定行动和证据关系，并揭示案例真相。</p><ul><li>${responseLabels[d.response]}</li><li>${supplierLabels[d.supplier]}</li><li>${inspectionLabels[d.inspection]}</li></ul>${decisionChecklist(false)}`,
       "提交并查看复盘",
       () => {
         if (update((s) => submitDecision(s, d), "决策已提交。")) go("report");
@@ -665,6 +817,14 @@ document.addEventListener("input", (event) => {
 });
 document.addEventListener("change", (event) => {
   const el = event.target;
+  if (el.matches("#link-form select")) {
+    const fields = {
+      evidence: "linkEvidenceId",
+      hypothesis: "linkHypothesisId",
+      relation: "linkRelation",
+    };
+    ui[fields[el.name]] = el.value;
+  }
   if (el.id === "evidence-filter") {
     ui.evidenceType = el.value;
     render();
@@ -684,9 +844,16 @@ document.addEventListener("change", (event) => {
   }
 });
 window.addEventListener("hashchange", () => {
+  dismissToast();
   ui.route = getRoute();
+  const nextAction = getEvidenceAction();
+  if (nextAction !== ui.evidenceAction) {
+    ui.search = "";
+    ui.evidenceType = "all";
+  }
+  ui.evidenceAction = nextAction;
   render();
-  document.querySelector("#main").focus({ preventScroll: true });
+  focusRoute();
 });
 document
   .querySelector("#evidence-dialog")

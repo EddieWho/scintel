@@ -555,33 +555,184 @@ const clamp = (value, minimum, maximum) =>
 const correctLink = (link) =>
   CORRECT_LINKS.get(`${link.evidenceId}|${link.hypothesisId}`);
 
+const relationLabel = (relation) => (relation === "supports" ? "支持" : "反驳");
+
+const EVIDENCE_REVIEW_NOTES = Object.freeze({
+  E01: "投诉趋势确认了过热现象在上升，但不能区分供应商、设备或设计根因。",
+  E02: "较早的绿色供应商分数只说明当时的记录状态，缺少二级来源更新，不能证明本次元件没有被替换，也不能单独证明元件为真或为假。",
+  E03: "失效集中在 B2405 与 B2406，支持从供应商来源方向继续追查；抽样有限，不能单独推断全部成品。",
+  E04: "批号和箱号把异常连到两家工厂，支持从共同来源方向继续追查；它本身不能证明替换由谁安排。",
+  E05: "降价、临时二级供方和付款路径变化支持供应商来源假设；报价记录本身不能证明元件已经替换。",
+  E06: "包装差异和未经批准的临时分包商支持供应商来源假设；审核摘录尚未把每个箱号直接连到异常批次。",
+  E07: "设备在校准期内且控制批次正常，反驳设备漂移是主要触发点；它不能证明元件本身一定合格。",
+  E08: "送检样本的封装和电性不符批准来源，支持供应商来源假设；结论只覆盖送检样本和来源确认，不说明谁安排替换或全部成品比例。",
+  E09: "异常前后的设计与物料清单没有变化，正常控制批次也使用同一版本，反驳设计版本是触发点；它不能排除供应商未按清单交付。",
+  E10: "一名产线人员的证言较弱、权重较低，只支持调查设备这一方向，并需要设备日志或控制批次交叉验证。",
+});
+
+const expectedLinksForEvidence = (evidenceId) =>
+  CASE.correctLinks.filter((link) => link.evidenceId === evidenceId);
+
+const explainUserLink = (evidence, link) => {
+  const answer = correctLink(link);
+  const hypothesis = HYPOTHESES.get(link.hypothesisId);
+  if (answer && answer.relation === link.relation) {
+    return `这条记录可${relationLabel(answer.relation)}“${hypothesis.title}”。${EVIDENCE_REVIEW_NOTES[evidence.id]}`;
+  }
+
+  const expected = expectedLinksForEvidence(evidence.id);
+  if (answer) {
+    return `这条记录实际可${relationLabel(answer.relation)}“${hypothesis.title}”，不能按“${relationLabel(link.relation)}”使用。${EVIDENCE_REVIEW_NOTES[evidence.id]}`;
+  }
+  if (expected.length > 0) {
+    const scope = expected
+      .map(
+        (item) =>
+          `${relationLabel(item.relation)}“${HYPOTHESES.get(item.hypothesisId).title}”`,
+      )
+      .join("，");
+    return `本案例评分记录的有效关系是${scope}；不能据此${relationLabel(link.relation)}“${hypothesis.title}”。${EVIDENCE_REVIEW_NOTES[evidence.id]}`;
+  }
+  return `这条记录只能说明${EVIDENCE_REVIEW_NOTES[evidence.id].replace(/。$/, "")}，不能据此${relationLabel(link.relation)}“${hypothesis.title}”。`;
+};
+
+const explainEvidenceItem = (evidence, status, userLinks) => {
+  const note = EVIDENCE_REVIEW_NOTES[evidence.id];
+  if (status === "unread") return `尚未阅读，暂不评价这条记录的使用。${note}`;
+  if (status === "context") return `已阅读，作为背景记录保留。${note}`;
+  if (status === "read")
+    return `已阅读，但还没有把它与假设建立支持或反驳关系。${note}`;
+  if (status === "used")
+    return `已把这条记录用于至少一条与文档相符的关系。${note}`;
+  const wrongCount = userLinks.filter((link) => !link.correct).length;
+  return `已建立关系，但有 ${wrongCount} 条关系与文档能证明的方向或范围不符，请复核。${note}`;
+};
+
+const evidenceContribution = (state, evidence) => {
+  const weight = EVIDENCE_WEIGHTS[evidence.id];
+  if (!state.read.includes(evidence.id)) {
+    return {
+      read: false,
+      weight,
+      links: [],
+      correct: false,
+      wrong: 0,
+      base: 0,
+      penalty: 0,
+      rawContribution: 0,
+    };
+  }
+  const links = state.links.filter((link) => link.evidenceId === evidence.id);
+  const correct = links.some((link) => {
+    const answer = correctLink(link);
+    return answer && answer.relation === link.relation;
+  });
+  const wrong = links.filter((link) => {
+    const answer = correctLink(link);
+    return !answer || answer.relation !== link.relation;
+  }).length;
+  const base = correct ? weight : weight * 0.25;
+  const penalty = Math.min(weight * 0.55, wrong * 2);
+  return {
+    read: true,
+    weight,
+    links,
+    correct,
+    wrong,
+    base,
+    penalty,
+    rawContribution: base - penalty,
+  };
+};
+
 const scoreEvidence = (state) => {
   let raw = 0;
   let wrongPenalty = 0;
   let coveredWeight = 0;
   for (const evidence of CASE.evidence) {
-    const weight = EVIDENCE_WEIGHTS[evidence.id];
-    if (!state.read.includes(evidence.id)) continue;
-    coveredWeight += weight;
-    const links = state.links.filter((link) => link.evidenceId === evidence.id);
-    const expected = links.some((link) => {
-      const answer = correctLink(link);
-      return answer && answer.relation === link.relation;
-    });
-    raw += expected ? weight : weight * 0.25;
-    const wrong = links.filter((link) => {
-      const answer = correctLink(link);
-      return !answer || answer.relation !== link.relation;
-    }).length;
-    const penalty = Math.min(weight * 0.55, wrong * 2);
-    wrongPenalty += penalty;
-    raw -= penalty;
+    const contribution = evidenceContribution(state, evidence);
+    if (!contribution.read) continue;
+    coveredWeight += contribution.weight;
+    raw += contribution.base;
+    wrongPenalty += contribution.penalty;
+    raw -= contribution.penalty;
   }
   // 24 weighted points is the substantive coverage target. This lets a
   // careful, selective investigation reach the full process score without
   // requiring every expensive action.
   const score = Math.round(clamp((raw / 24) * 40, 0, 40));
   return { score, raw, wrongPenalty, coveredWeight };
+};
+
+const evidenceReviewFor = (state) => {
+  const unlocked = new Set(state.unlocked);
+  const read = new Set(state.read);
+  const items = CASE.evidence
+    .filter((evidence) => unlocked.has(evidence.id))
+    .map((evidence) => {
+      const contribution = evidenceContribution(state, evidence);
+      const userLinks = contribution.links.map((link) => ({
+        hypothesisId: link.hypothesisId,
+        relation: link.relation,
+        correct: Boolean(
+          correctLink(link) && correctLink(link).relation === link.relation,
+        ),
+        explanation: explainUserLink(evidence, link),
+      }));
+      const hasIncorrect = userLinks.some((link) => !link.correct);
+      const hasCorrect = userLinks.some((link) => link.correct);
+      const status = !read.has(evidence.id)
+        ? "unread"
+        : hasIncorrect
+          ? "needs_review"
+          : hasCorrect
+            ? "used"
+            : evidence.id === "E01" || evidence.id === "E02"
+              ? "context"
+              : "read";
+      const statusLabel = {
+        unread: "尚未阅读",
+        context: "背景材料",
+        read: "读过，未关联",
+        used: "关联正确",
+        needs_review: "关系需复核",
+      }[status];
+      return {
+        id: evidence.id,
+        title: evidence.title,
+        status,
+        statusLabel,
+        explanation: explainEvidenceItem(evidence, status, userLinks),
+        userLinks,
+        rawContribution: contribution.rawContribution,
+      };
+    });
+  const readItems = items.filter((item) => item.status !== "unread");
+  const correctEvidenceCount = items.filter((item) =>
+    item.userLinks.some((link) => link.correct),
+  ).length;
+  const incorrectLinkCount = items.reduce(
+    (count, item) =>
+      count + item.userLinks.filter((link) => !link.correct).length,
+    0,
+  );
+  const unlinkedReadCount = items.filter(
+    (item) =>
+      item.status === "read" &&
+      item.userLinks.length === 0 &&
+      item.id !== "E01" &&
+      item.id !== "E02",
+  ).length;
+  return {
+    summary: {
+      readCount: readItems.length,
+      correctEvidenceCount,
+      incorrectLinkCount,
+      unlinkedReadCount,
+      unreadCount: items.length - readItems.length,
+    },
+    items,
+  };
 };
 
 const scoreHypothesis = (state) => {
@@ -784,10 +935,122 @@ const outcomeFor = (state) => {
   return { cost, leadTimeDays, customerRisk, headline, summary };
 };
 
+const evidenceFeedbackFor = (review) => {
+  const { summary } = review;
+  const feedback = `已阅读 ${summary.readCount} 条解锁证据，其中 ${summary.correctEvidenceCount} 条建立了正确关系；${summary.unlinkedReadCount} 条能帮助区分原因的材料尚未链接，${summary.incorrectLinkCount} 条关系需要复核，${summary.unreadCount} 条尚未阅读。`;
+  const improvements = [];
+  if (summary.incorrectLinkCount > 0)
+    improvements.push("先确认需要复核的关系实际支持还是反驳该假设");
+  if (summary.unlinkedReadCount > 0)
+    improvements.push(
+      "可把已读的能帮助区分原因的材料与相关假设建立支持或反驳关系",
+    );
+  if (summary.unreadCount > 0)
+    improvements.push("按剩余疑点选择性补读即可，不需要读完所有记录");
+  if (improvements.length === 0)
+    improvements.push("E01、E02可保留为背景，不必强行链接到假设");
+  return `${feedback}${improvements.join("；")}。`;
+};
+
+const hypothesisFeedbackFor = (state) => {
+  const selected = HYPOTHESES.get(state.hypothesis);
+  const selectedLinks = state.links.filter(
+    (link) => link.hypothesisId === state.hypothesis,
+  );
+  const selectedCorrect = selectedLinks.filter((link) => {
+    const answer = correctLink(link);
+    return answer && answer.relation === link.relation;
+  }).length;
+  const selectedCorrectSupports = selectedLinks.filter((link) => {
+    const answer = correctLink(link);
+    return (
+      answer &&
+      answer.relation === link.relation &&
+      link.relation === "supports"
+    );
+  }).length;
+  const selectedCorrectContradictions = selectedLinks.filter((link) => {
+    const answer = correctLink(link);
+    return (
+      answer &&
+      answer.relation === link.relation &&
+      link.relation === "contradicts"
+    );
+  }).length;
+  const otherLinks = state.links.length - selectedLinks.length;
+  const analysisCount = state.analysisViews.length;
+  const feedback = `你选择“${selected.title}”作为主假设，已读 ${state.read.length} 条证据并建立 ${selectedLinks.length} 条主假设关系，其中 ${selectedCorrectSupports} 条支持关系、${selectedCorrectContradictions} 条正确反驳关系，另有 ${selectedLinks.length - selectedCorrect} 条方向需要复核；另有 ${otherLinks} 条关系用于其他假设，分析视图 ${analysisCount} 个。`;
+  const improvements = [];
+  if (selectedLinks.length === 0)
+    improvements.push("可把已读证据的支持或反驳关系连到主假设");
+  if (selectedLinks.length > selectedCorrect)
+    improvements.push("复核主假设下方向不一致的关系");
+  if (selectedCorrectContradictions > 0)
+    improvements.push("这些证据在反驳你最终选择的假设，需要重新考虑结论");
+  if (otherLinks === 0)
+    improvements.push("可用已读证据检查机器和设计等竞争解释");
+  if (improvements.length === 0)
+    improvements.push("继续用相反方向的证据检查竞争解释");
+  return `${feedback}${improvements.join("；")}。`;
+};
+
+const decisionFeedbackFor = (state) => {
+  const containment = CONTAINMENT.get(state.containment);
+  const elapsed = elapsedHours(state);
+  const containmentText =
+    state.containmentAt === null
+      ? `调查期间未升级遏制，最终措施为“${containment.title}”`
+      : `调查开始后 ${state.containmentAt} 小时开始暂停出货，最终措施为“${containment.title}”`;
+  const responseLabels = {
+    targeted: "定向召回",
+    all: "全面召回",
+    none: "不启动召回",
+  };
+  const supplierLabels = {
+    suspend: "暂停供应商",
+    verify: "核查供应商",
+    keep: "维持供应商供货",
+  };
+  const inspectionLabels = { enhanced: "加强检验", standard: "标准检验" };
+  const feedback = `${containmentText}，调查在 ${elapsed} 小时后提交；选择${responseLabels[state.decision.response]}、${supplierLabels[state.decision.supplier]}和${inspectionLabels[state.decision.inspection]}。`;
+  const improvements = [];
+  if (state.containmentAt === null)
+    improvements.push("可在调查早期升级遏制以减少继续暴露");
+  if (
+    state.decision.response === "targeted" &&
+    !(
+      state.actions.includes("trace") &&
+      state.read.includes("E03") &&
+      state.read.includes("E04")
+    )
+  )
+    improvements.push(
+      "定向响应前补足 E03、E04 的批次范围证据，或选择更宽的响应范围",
+    );
+  if (
+    state.decision.supplier === "suspend" &&
+    !state.read.includes("E06") &&
+    !state.read.includes("E08")
+  )
+    improvements.push("供应商处置前补读 E06 或 E08 的来源证据");
+  if (!state.read.some((evidenceId) => !["E01", "E02"].includes(evidenceId)))
+    improvements.push(
+      "目前没有阅读能帮助区分原因的调查材料，处置选择仍缺少记录依据",
+    );
+  if (state.decision.response === "none")
+    improvements.push("尚未启动召回范围，可在补足批次范围后重新确定响应");
+  if (state.decision.supplier === "keep")
+    improvements.push("当前维持供应商供货，可先核查来源再决定是否暂停");
+  if (improvements.length === 0)
+    improvements.push("当前处置选择与已读范围证据保持对应");
+  return `${feedback}${improvements.join("；")}。`;
+};
+
 export function scoreCase(state) {
   ensureState(state);
   if (state.decision === null) throw new Error("结论尚未提交");
   const evidenceResult = scoreEvidence(state);
+  const evidenceReview = evidenceReviewFor(state);
   const hypothesisResult = scoreHypothesis(state);
   const decisionResult = scoreDecision(state);
   const evidenceScore = evidenceResult.score;
@@ -865,7 +1128,7 @@ export function scoreCase(state) {
       const answer = correctLink(link);
       const expected = answer
         ? `；该证据登记为“${relationLabel(answer.relation)}”`
-        : "；该证据没有可登记的区分性关系";
+        : "；该材料没有可登记的能帮助区分原因的关系";
       return `${link.evidenceId} ${EVIDENCE.get(link.evidenceId).title} → ${HYPOTHESES.get(link.hypothesisId).title}（你标为“${relationLabel(link.relation)}”${expected}）`;
     });
     missed.push(
@@ -878,26 +1141,36 @@ export function scoreCase(state) {
     categories: [
       {
         id: "evidence",
-        label: "证据整理",
+        label: "证据运用",
         score: evidenceScore,
         max: 40,
-        feedback: `原始权重 ${evidenceResult.raw.toFixed(1)} / 目标 24；已覆盖权重 ${evidenceResult.coveredWeight}，关系扣分 ${evidenceResult.wrongPenalty.toFixed(1)}；归一化、取整并限于 0–40 后：${evidenceScore}/40。`,
+        description:
+          "阅读可获得基础分；把能帮助区分原因的材料与假设建立“支持”或“反驳”关系，才体现证据运用。无需读完所有记录；E01、E02是背景，不必强行放进假设。",
+        calculation: `原始权重 ${evidenceResult.raw.toFixed(1)} / 目标 24；已覆盖权重 ${evidenceResult.coveredWeight}，关系扣分 ${evidenceResult.wrongPenalty.toFixed(1)}；归一化、取整并限于 0–40 后：${evidenceScore}/40。`,
+        feedback: evidenceFeedbackFor(evidenceReview),
       },
       {
         id: "hypothesis",
         label: "假设论证",
         score: hypothesisScore,
         max: 30,
-        feedback: `基础 ${hypothesisResult.base} + 支持 ${hypothesisResult.support.toFixed(1)} + 替代解释 ${hypothesisResult.alternativeBonus.toFixed(1)} + 分析 ${hypothesisResult.analysisBonus.toFixed(1)} − 矛盾与错误链接 ${hypothesisResult.contradictionPenalty.toFixed(1)}；取整并限于 0–30 后：${hypothesisScore}/30。`,
+        description:
+          "比较供应商、设备和设计等竞争解释，用证据的支持与反驳关系说明主假设，并检查替代解释。",
+        calculation: `基础 ${hypothesisResult.base} + 支持 ${hypothesisResult.support.toFixed(1)} + 替代解释 ${hypothesisResult.alternativeBonus.toFixed(1)} + 分析 ${hypothesisResult.analysisBonus.toFixed(1)} − 矛盾与错误链接 ${hypothesisResult.contradictionPenalty.toFixed(1)}；取整并限于 0–30 后：${hypothesisScore}/30。`,
+        feedback: hypothesisFeedbackFor(state),
       },
       {
         id: "decision",
         label: "决策质量",
         score: decisionScore,
         max: 30,
-        feedback: `遏制 ${decisionResult.containment} + 时点 ${decisionResult.timing} + 供应措施 ${decisionResult.supplier} + 产品处置 ${decisionResult.response} + 检验 ${decisionResult.inspection}；取整并限于 0–30 后：${decisionScore}/30。`,
+        description:
+          "按风险和证据选择及时、恰当的遏制、调查、供应商处置、响应范围与检验强度。",
+        calculation: `遏制 ${decisionResult.containment} + 时点 ${decisionResult.timing} + 供应措施 ${decisionResult.supplier} + 产品处置 ${decisionResult.response} + 检验 ${decisionResult.inspection}；取整并限于 0–30 后：${decisionScore}/30。`,
+        feedback: decisionFeedbackFor(state),
       },
     ],
+    evidenceReview,
     outcome: outcomeFor(state),
     strengths,
     missed,
