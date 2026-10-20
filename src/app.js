@@ -1,5 +1,13 @@
 import { CASE } from "./case.js";
 import {
+  LANGUAGE_KEY,
+  isLanguage,
+  translateText,
+  localizeElement,
+  localizeReport,
+  localizeAssessment,
+} from "./i18n/index.js?v=1.1.0";
+import {
   createState,
   startCase,
   takeAction,
@@ -16,6 +24,14 @@ import {
 } from "./engine.js?v=1.0.1";
 
 const STORAGE = "scintel:counterfeit:1";
+let language = "zh-CN";
+try {
+  const savedLanguage = localStorage.getItem(LANGUAGE_KEY);
+  if (isLanguage(savedLanguage)) language = savedLanguage;
+} catch {
+  /* Language switching also works without persistent storage. */
+}
+const tr = (value) => translateText(value, language);
 const routes = [
   ["overview", "案件概览", "grid"],
   ["investigate", "调查行动", "search"],
@@ -58,7 +74,8 @@ const esc = (value) =>
         c
       ],
   );
-const fmt = (n) => Number(n).toLocaleString("zh-CN");
+const fmt = (n) =>
+  Number(n).toLocaleString(language === "en" ? "en-US" : "zh-CN");
 const byEvidence = (id) => CASE.evidence.find((e) => e.id === id);
 const byHypothesis = (id) => CASE.hypotheses.find((h) => h.id === id);
 const responseLabels = {
@@ -119,7 +136,36 @@ try {
   /* A corrupt draft does not affect investigation progress. */
 }
 let pendingConfirm = null;
+let confirmationView = null;
 let toastTimer;
+
+function languageControl() {
+  return `<label class="language-control" data-no-i18n><select data-language aria-label="${tr("语言")}"><option value="zh-CN" ${language === "zh-CN" ? "selected" : ""}>中文</option><option value="en" ${language === "en" ? "selected" : ""}>English</option></select></label>`;
+}
+function setLanguage(nextLanguage) {
+  if (!isLanguage(nextLanguage) || nextLanguage === language) return;
+  const evidenceDialog = document.querySelector("#evidence-dialog");
+  const evidenceId = evidenceDialog.open
+    ? evidenceDialog.dataset.evidence
+    : null;
+  const confirmOpen = document.querySelector("#confirm-dialog").open;
+  language = nextLanguage;
+  let remembered = true;
+  try {
+    localStorage.setItem(LANGUAGE_KEY, language);
+  } catch {
+    remembered = false;
+  }
+  dismissToast();
+  render();
+  if (evidenceId) openEvidence(evidenceId);
+  else if (confirmOpen && confirmationView) renderConfirmation();
+  else
+    document
+      .querySelector("header [data-language]")
+      ?.focus({ preventScroll: true });
+  if (!remembered) toast("语言已切换，但浏览器未允许记住此选择。");
+}
 
 function getRoute() {
   const route = location.hash.slice(1).split("?")[0];
@@ -181,14 +227,16 @@ function update(fn, message, rerender = true) {
 }
 function toast(message) {
   const el = document.querySelector("#toast");
-  el.textContent = message;
+  el.textContent = tr(message);
   el.classList.add("visible");
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove("visible"), 4200);
 }
 function dismissToast() {
   clearTimeout(toastTimer);
-  document.querySelector("#toast").classList.remove("visible");
+  const toast = document.querySelector("#toast");
+  toast.classList.remove("visible");
+  toast.textContent = "";
 }
 function go(route) {
   ui.menu = false;
@@ -215,7 +263,12 @@ function resourceBar() {
   return `<div class="resource-pair"><div class="resource">${icon("wallet")}<span>调查预算<strong>${state.budget}<small> / ${CASE.initialBudget}</small></strong></span><div class="meter"><i style="width:${(state.budget / CASE.initialBudget) * 100}%"></i></div></div><div class="resource">${icon("clock")}<span>剩余时间<strong>${state.hoursLeft}<small> 小时</small></strong></span><div class="meter"><i style="width:${(state.hoursLeft / CASE.initialHours) * 100}%"></i></div></div></div>`;
 }
 function render() {
-  document.title = `${routes.find((r) => r[0] === ui.route)?.[1]} · SCINTEL`;
+  document.documentElement.lang = language;
+  document.title = `${tr(routes.find((r) => r[0] === ui.route)?.[1])} · SCINTEL`;
+  document.querySelector(".skip-link").textContent = tr("跳到主要内容");
+  document.querySelector('meta[name="description"]').content = tr(
+    "SCINTEL 供应链调查模拟：用不完整的证据，作出有依据的决策。",
+  );
   const completed = Boolean(state.decision);
   const unread = state.unlocked.filter((id) => !state.read.includes(id)).length;
   const content = {
@@ -235,9 +288,10 @@ function render() {
       <div class="sidebar-bottom"><div class="case-label"><span class="live-dot"></span> ${completed ? "调查已归档" : state.started ? "调查进行中" : "案件待启动"}</div><strong>CASE / 001</strong><p>假冒零部件危机</p><div class="sidebar-progress"><i style="width:${completed ? 100 : state.started ? 15 + state.actions.length * 12 : 0}%"></i></div><span class="sidebar-note">好的判断，始于好的证据。</span></div>
     </aside>
     <div class="workspace">
-      <header class="topbar"><div class="breadcrumb">${button(icon("menu"), "menu", 'aria-label="切换导航" aria-expanded="' + ui.menu + '"', "icon-btn mobile-toggle")}<span>调查工作区</span><span class="slash">/</span><strong>假冒零部件危机</strong></div><div class="topbar-actions"><span class="save-status"><span class="live-dot"></span>${storageWarning ? "仅当前会话" : "本地自动保存"}</span>${button(icon("help"), "help", 'aria-label="玩法说明"', "icon-btn")}${button(icon("reset"), "restart", 'aria-label="重新开始"', "icon-btn")}<span class="avatar" title="调查负责人">SC</span></div></header>
+      <header class="topbar"><div class="breadcrumb">${button(icon("menu"), "menu", 'aria-label="切换导航" aria-expanded="' + ui.menu + '"', "icon-btn mobile-toggle")}<span>调查工作区</span><span class="slash">/</span><strong>假冒零部件危机</strong></div><div class="topbar-actions"><span class="save-status"><span class="live-dot"></span>${storageWarning ? "仅当前会话" : "本地自动保存"}</span>${languageControl()}${button(icon("help"), "help", 'aria-label="玩法说明"', "icon-btn")}${button(icon("reset"), "restart", 'aria-label="重新开始"', "icon-btn")}<span class="avatar" title="调查负责人">SC</span></div></header>
       <main id="main" tabindex="-1">${storageWarning ? `<div class="notice warning">${esc(storageWarning)}</div>` : ""}${content}<footer class="page-footer"><span>SCINTEL <b>·</b> INVESTIGATE WITH INTENT</span><span>教学模拟 · 全部企业与数据均为虚构</span></footer></main>
     </div>`;
+  localizeElement(document.querySelector("#app"), language);
 }
 function overview() {
   return `${heading("CASE FILE / 001", "警报背后的真相", "一次异常退货，可能只是更大问题的开端。你的任务是找到证据，作出判断。", '<span class="tag orange"><span class="live-dot"></span> 产品安全事件</span>')}
@@ -333,7 +387,7 @@ function filteredEvidence() {
           : ui.evidenceType === "unread"
             ? state.unlocked.includes(e.id) && !state.read.includes(e.id)
             : !state.unlocked.includes(e.id))) &&
-      `${e.id} ${e.title} ${e.type}`
+      `${e.id} ${e.title} ${e.type} ${translateText(e.title, "en")} ${translateText(e.type, "en")}`
         .toLowerCase()
         .includes(ui.search.toLowerCase()),
   );
@@ -359,8 +413,9 @@ function openEvidence(id) {
     ? null
     : batch.find((e) => e !== id && !state.read.includes(e));
   const dialog = document.querySelector("#evidence-dialog");
-  dialog.innerHTML = `<div class="dialog-top"><span class="eyebrow">EVIDENCE / ${id}</span>${button(icon("close"), "close-evidence", 'aria-label="关闭证据"', "icon-btn")}</div><span class="tag neutral">${esc(evidence.type)}</span><h2 id="evidence-title" tabindex="-1">${esc(evidence.title)}</h2><dl class="evidence-meta"><div><dt>来源</dt><dd>${esc(evidence.source)}</dd></div><div><dt>记录时间</dt><dd>${esc(evidence.date)}</dd></div><div class="wide"><dt>可靠性与局限</dt><dd>${esc(evidence.reliability)}</dd></div></dl><div class="document-body">${evidence.body.map((p) => `<p>${esc(p)}</p>`).join("")}${evidence.table ? renderTable(evidence.table.headers, evidence.table.rows) : ""}</div><p class="muted">${evidence.tags.map(esc).join(" · ")}</p><div class="dialog-bottom evidence-reading-actions">${next ? button(`阅读下一份 · ${next} ` + icon("arrow"), "next-evidence", `data-id="${next}"`, "btn secondary") : `<span class="muted">${state.decision ? "本次调查已归档" : ui.evidenceAction ? "本次调查材料已全部阅读" : "已获取材料已全部阅读"}</span>`}${state.started && !state.decision ? button("关联这份证据 " + icon("nodes"), "evidence-to-hypotheses", `data-id="${id}"`, "btn primary") : button("关闭材料", "close-evidence", "", "btn secondary")}</div>`;
+  dialog.innerHTML = `<div class="dialog-top"><span class="eyebrow">EVIDENCE / ${id}</span>${languageControl()}${button(icon("close"), "close-evidence", 'aria-label="关闭证据"', "icon-btn")}</div><span class="tag neutral">${esc(evidence.type)}</span><h2 id="evidence-title" tabindex="-1">${esc(evidence.title)}</h2><dl class="evidence-meta"><div><dt>来源</dt><dd>${esc(evidence.source)}</dd></div><div><dt>记录时间</dt><dd>${esc(evidence.date)}</dd></div><div class="wide"><dt>可靠性与局限</dt><dd>${esc(evidence.reliability)}</dd></div></dl><div class="document-body">${evidence.body.map((p) => `<p>${esc(p)}</p>`).join("")}${evidence.table ? renderTable(evidence.table.headers, evidence.table.rows) : ""}</div><p class="muted">${evidence.tags.map(esc).join(" · ")}</p><div class="dialog-bottom evidence-reading-actions">${next ? button(`阅读下一份 · ${next} ` + icon("arrow"), "next-evidence", `data-id="${next}"`, "btn secondary") : `<span class="muted">${state.decision ? "本次调查已归档" : ui.evidenceAction ? "本次调查材料已全部阅读" : "已获取材料已全部阅读"}</span>`}${state.started && !state.decision ? button("关联这份证据 " + icon("nodes"), "evidence-to-hypotheses", `data-id="${id}"`, "btn primary") : button("关闭材料", "close-evidence", "", "btn secondary")}</div>`;
   dialog.dataset.evidence = id;
+  localizeElement(dialog, language);
   if (!dialog.open) dialog.showModal();
   dialog.scrollTop = 0;
   dialog.querySelector("#evidence-title").focus({ preventScroll: true });
@@ -550,13 +605,19 @@ function report() {
       )
     );
   const r = scoreCase(state);
-  return `${title}<section class="report-hero"><div><span class="eyebrow">INVESTIGATION COMPLETE</span><h2>${esc(r.outcome.headline)}</h2><p>你用了 ${CASE.initialHours - state.hoursLeft} 小时，完成 ${state.actions.length} 项调查，阅读 ${state.read.length} 份材料并记录 ${state.links.length} 条证据关系。下面分别回顾你的判断依据与处置后果。</p><div class="report-actions">${button(icon("download") + " 下载调查报告", "export-report", "", "btn light")}${button("导出行动记录", "export-json", "", "btn outline-light")}</div><small>报告为 HTML 文件，可在浏览器中打印为 PDF。</small></div><div class="score-ring" style="--score:${r.total * 3.6}deg"><div><strong>${r.total}<span>/100</span></strong><small>调查过程评分</small></div></div></section><div class="score-grid">${r.categories.map((c) => `<section class="panel score-card" data-score-category="${c.id}"><div class="section-heading"><h2>${esc(c.label)}</h2><strong>${c.score}<small> / ${c.max}</small></strong></div><p class="score-description">${esc(c.description)}</p><div class="meter"><i style="width:${(c.score / c.max) * 100}%"></i></div><p>${esc(c.feedback)}</p><details class="score-calculation"><summary>查看计算方式</summary><p>${esc(c.calculation)}</p></details></section>`).join("")}</div>${evidenceReviewSection(r.evidenceReview)}<section class="panel section-block decision-recap"><div class="section-heading"><h2>你的最终方案</h2><span class="tag neutral">已提交</span></div><dl><div><dt>当前判断</dt><dd>${esc(byHypothesis(state.hypothesis).title)}</dd></div><div><dt>产品处置</dt><dd>${responseLabels[state.decision.response]}</dd></div><div><dt>供应措施</dt><dd>${supplierLabels[state.decision.supplier]}</dd></div><div><dt>检验安排</dt><dd>${inspectionLabels[state.decision.inspection]}</dd></div></dl><h3>你给出的理由</h3><p class="submitted-rationale">${esc(state.rationale)}</p><p class="hint">自由文字保留供你和教师讨论，没有自动进行语义评分。</p></section><section class="panel section-block"><div class="section-heading"><h2>方案后果</h2><span class="tag neutral">教学模型估算</span></div><div class="outcome-grid"><div><span>处置成本</span><strong>¥${fmt(r.outcome.cost)}</strong></div><div><span>额外交付时间</span><strong>${r.outcome.leadTimeDays} 天</strong></div><div><span>客户风险</span><strong>${esc(r.outcome.customerRisk)}</strong></div></div><p class="hint">经营后果与上面的过程评分分开展示。较低成本不代表更好的判断；这里的结果来自固定教学模型。</p><details class="score-calculation"><summary>查看后果的计算依据</summary><p>${esc(r.outcome.summary)}</p></details></section><section class="panel section-block truth-panel"><div class="eyebrow">THE STORY BEHIND THE SIGNAL</div><h2>${esc(r.truth.title)}</h2>${r.truth.explanation.map((p) => `<p>${esc(p)}</p>`).join("")}</section><div class="review-columns"><section class="panel"><h2>有依据的做法</h2><ul class="review-list">${r.strengths.map((s) => `<li>${esc(s)}</li>`).join("") || "<li>本次尚未形成充分的证据链。</li>"}</ul></section><section class="panel"><h2>值得再追问的地方</h2><ul class="review-list">${r.missed.map((s) => `<li>${esc(s)}</li>`).join("") || "<li>关键调查要素已覆盖。尝试用更少资源完成下一次调查。</li>"}</ul></section></div><section class="panel section-block"><label class="textarea-label" for="reflection">调查反思 <span>保留在下载报告中，不自动评分</span></label><textarea id="reflection" rows="4" maxlength="5000" placeholder="哪条证据改变了你的判断？你可能忽略了什么？如果再来一次，会怎样分配调查资源？">${esc(state.reflection)}</textarea></section><section class="panel section-block"><div class="section-heading"><h2>完整行动时间线</h2><span class="muted">时间按行动推进</span></div>${actionLog()}</section>`;
+  return `${title}<section class="report-hero"><div><span class="eyebrow">INVESTIGATION COMPLETE</span><h2>${esc(r.outcome.headline)}</h2><p>你用了 ${CASE.initialHours - state.hoursLeft} 小时，完成 ${state.actions.length} 项调查，阅读 ${state.read.length} 份材料并记录 ${state.links.length} 条证据关系。下面分别回顾你的判断依据与处置后果。</p><div class="report-actions">${button(icon("download") + " 下载调查报告", "export-report", "", "btn light")}${button("导出行动记录", "export-json", "", "btn outline-light")}</div><small>报告为 HTML 文件，可在浏览器中打印为 PDF。</small></div><div class="score-ring" style="--score:${r.total * 3.6}deg"><div><strong>${r.total}<span>/100</span></strong><small>调查过程评分</small></div></div></section><div class="score-grid">${r.categories.map((c) => `<section class="panel score-card" data-score-category="${c.id}"><div class="section-heading"><h2>${esc(c.label)}</h2><strong>${c.score}<small> / ${c.max}</small></strong></div><p class="score-description">${esc(c.description)}</p><div class="meter"><i style="width:${(c.score / c.max) * 100}%"></i></div><p>${esc(c.feedback)}</p><details class="score-calculation"><summary>查看计算方式</summary><p>${esc(c.calculation)}</p></details></section>`).join("")}</div>${evidenceReviewSection(r.evidenceReview)}<section class="panel section-block decision-recap"><div class="section-heading"><h2>你的最终方案</h2><span class="tag neutral">已提交</span></div><dl><div><dt>当前判断</dt><dd>${esc(byHypothesis(state.hypothesis).title)}</dd></div><div><dt>产品处置</dt><dd>${responseLabels[state.decision.response]}</dd></div><div><dt>供应措施</dt><dd>${supplierLabels[state.decision.supplier]}</dd></div><div><dt>检验安排</dt><dd>${inspectionLabels[state.decision.inspection]}</dd></div></dl><h3>你给出的理由</h3><p class="submitted-rationale" data-user-content>${esc(state.rationale)}</p><p class="hint">自由文字保留供你和教师讨论，没有自动进行语义评分。</p></section><section class="panel section-block"><div class="section-heading"><h2>方案后果</h2><span class="tag neutral">教学模型估算</span></div><div class="outcome-grid"><div><span>处置成本</span><strong>¥${fmt(r.outcome.cost)}</strong></div><div><span>额外交付时间</span><strong>${r.outcome.leadTimeDays} 天</strong></div><div><span>客户风险</span><strong>${esc(r.outcome.customerRisk)}</strong></div></div><p class="hint">经营后果与上面的过程评分分开展示。较低成本不代表更好的判断；这里的结果来自固定教学模型。</p><details class="score-calculation"><summary>查看后果的计算依据</summary><p>${esc(r.outcome.summary)}</p></details></section><section class="panel section-block truth-panel"><div class="eyebrow">THE STORY BEHIND THE SIGNAL</div><h2>${esc(r.truth.title)}</h2>${r.truth.explanation.map((p) => `<p>${esc(p)}</p>`).join("")}</section><div class="review-columns"><section class="panel"><h2>有依据的做法</h2><ul class="review-list">${r.strengths.map((s) => `<li>${esc(s)}</li>`).join("") || "<li>本次尚未形成充分的证据链。</li>"}</ul></section><section class="panel"><h2>值得再追问的地方</h2><ul class="review-list">${r.missed.map((s) => `<li>${esc(s)}</li>`).join("") || "<li>关键调查要素已覆盖。尝试用更少资源完成下一次调查。</li>"}</ul></section></div><section class="panel section-block"><label class="textarea-label" for="reflection">调查反思 <span>保留在下载报告中，不自动评分</span></label><textarea id="reflection" rows="4" maxlength="5000" placeholder="哪条证据改变了你的判断？你可能忽略了什么？如果再来一次，会怎样分配调查资源？">${esc(state.reflection)}</textarea></section><section class="panel section-block"><div class="section-heading"><h2>完整行动时间线</h2><span class="muted">时间按行动推进</span></div>${actionLog()}</section>`;
 }
 function confirm(title, body, label, action, destructive = false) {
-  const dialog = document.querySelector("#confirm-dialog");
   pendingConfirm = action;
-  dialog.innerHTML = `<div class="dialog-top"><span class="eyebrow">SCINTEL / CONFIRM</span>${button(icon("close"), "cancel-confirm", 'aria-label="取消"', "icon-btn")}</div><h2 id="confirm-title">${title}</h2><div class="confirm-body">${body}</div><div class="dialog-bottom">${button("返回", "cancel-confirm", "", "btn secondary")}${button(label, "confirm", "", "btn " + (destructive ? "danger" : "primary"))}</div>`;
-  dialog.showModal();
+  confirmationView = { title, body, label, destructive };
+  renderConfirmation();
+}
+function renderConfirmation() {
+  const dialog = document.querySelector("#confirm-dialog");
+  const { title, body, label, destructive } = confirmationView;
+  dialog.innerHTML = `<div class="dialog-top"><span class="eyebrow">SCINTEL / CONFIRM</span>${languageControl()}${button(icon("close"), "cancel-confirm", 'aria-label="取消"', "icon-btn")}</div><h2 id="confirm-title">${title}</h2><div class="confirm-body">${body}</div><div class="dialog-bottom">${button("返回", "cancel-confirm", "", "btn secondary")}${button(label, "confirm", "", "btn " + (destructive ? "danger" : "primary"))}</div>`;
+  localizeElement(dialog, language);
+  if (!dialog.open) dialog.showModal();
 }
 function help() {
   confirm(
@@ -577,7 +638,7 @@ function reportHTML() {
       item.userLinks
         .map(
           (link) =>
-            `${link.relation === "supports" ? "支持" : "反驳"} ${byHypothesis(link.hypothesisId).title}：${link.explanation}`,
+            `${tr(link.relation === "supports" ? "支持" : "反驳")} ${tr(byHypothesis(link.hypothesisId).title)}${language === "en" ? ": " : "："}${tr(link.explanation)}`,
         )
         .join("；") || "未关联",
     ]),
@@ -603,7 +664,7 @@ function reportHTML() {
     l.relation === "supports" ? "支持" : "反驳",
     byHypothesis(l.hypothesisId).title,
   ]);
-  return `<!doctype html><html lang="zh-CN"><meta charset="UTF-8"><meta name="viewport" content="width=device-width"><title>SCINTEL 调查报告</title><style>body{font-family:system-ui,sans-serif;max-width:900px;margin:48px auto;padding:0 24px;color:#24382f;line-height:1.8}h1,h2,h3{line-height:1.3}h2{margin-top:36px}table{border-collapse:collapse;width:100%;font-size:13px}th,td{border:1px solid #cdd5cf;text-align:left;padding:8px}th{background:#f0f3ee}.table-scroll{overflow:auto}p{white-space:pre-wrap}small{color:#526456}li{margin:8px 0}@media print{body{margin:0;max-width:none}.table-scroll{overflow:visible}tr{break-inside:avoid}h2{break-after:avoid}}</style><body><h1>SCINTEL 供应链调查报告</h1><p>案例：假冒零部件危机 / ${esc(CASE.id)} · 版本 ${CASE.version}</p><small>全部企业与数据为虚构。过程评分 ${r.total}/100；自由文字未自动评分。报告由浏览器生成，可打印为 PDF。</small><h2>决策与依据</h2><p>当前判断：${esc(byHypothesis(state.hypothesis).title)}<br>产品处置：${responseLabels[state.decision.response]}<br>供应措施：${supplierLabels[state.decision.supplier]}<br>检验措施：${inspectionLabels[state.decision.inspection]}</p><p>${esc(state.rationale)}</p><h2>过程评分</h2>${renderTable(
+  return `<!doctype html><html lang="zh-CN"><meta charset="UTF-8"><meta name="viewport" content="width=device-width"><title>SCINTEL 调查报告</title><style>body{font-family:system-ui,sans-serif;max-width:900px;margin:48px auto;padding:0 24px;color:#24382f;line-height:1.8}h1,h2,h3{line-height:1.3}h2{margin-top:36px}table{border-collapse:collapse;width:100%;font-size:13px}th,td{border:1px solid #cdd5cf;text-align:left;padding:8px}th{background:#f0f3ee}.table-scroll{overflow:auto}p{white-space:pre-wrap}small{color:#526456}li{margin:8px 0}@media print{body{margin:0;max-width:none}.table-scroll{overflow:visible}tr{break-inside:avoid}h2{break-after:avoid}}</style><body><h1>SCINTEL 供应链调查报告</h1><p>案例：假冒零部件危机 / ${esc(CASE.id)} · 版本 ${CASE.version}</p><small>全部企业与数据为虚构。过程评分 ${r.total}/100；自由文字未自动评分。报告由浏览器生成，可打印为 PDF。</small><h2>决策与依据</h2><p>当前判断：${esc(byHypothesis(state.hypothesis).title)}<br>产品处置：${responseLabels[state.decision.response]}<br>供应措施：${supplierLabels[state.decision.supplier]}<br>检验措施：${inspectionLabels[state.decision.inspection]}</p><p data-user-content>${esc(state.rationale)}</p><h2>过程评分</h2>${renderTable(
     ["维度", "得分", "解释"],
     r.categories.map((c) => [
       c.label,
@@ -622,7 +683,7 @@ function reportHTML() {
         e.reliability,
         state.read.includes(e.id) ? "是" : "否",
       ]),
-  )}<h2>假设矩阵</h2>${renderTable(["证据", "标题", "关系", "假设"], lines)}<h2>已记录的数据分析</h2><ul>${state.analysisViews.map((v) => `<li>${esc(v)}</li>`).join("") || "<li>未记录分析</li>"}</ul>${analysisTable}<h2>案例复盘</h2><h3>${esc(r.truth.title)}</h3>${r.truth.explanation.map((p) => `<p>${esc(p)}</p>`).join("")}<h3>有依据的做法</h3><ul>${r.strengths.map((p) => `<li>${esc(p)}</li>`).join("")}</ul><h3>改进方向</h3><ul>${r.missed.map((p) => `<li>${esc(p)}</li>`).join("")}</ul><h2>个人反思</h2><p>${esc(state.reflection || "尚未填写")}</p><h2>行动记录</h2>${renderTable(
+  )}<h2>假设矩阵</h2>${renderTable(["证据", "标题", "关系", "假设"], lines)}<h2>已记录的数据分析</h2><ul>${state.analysisViews.map((v) => `<li>${esc(v)}</li>`).join("") || "<li>未记录分析</li>"}</ul>${analysisTable}<h2>案例复盘</h2><h3>${esc(r.truth.title)}</h3>${r.truth.explanation.map((p) => `<p>${esc(p)}</p>`).join("")}<h3>有依据的做法</h3><ul>${r.strengths.map((p) => `<li>${esc(p)}</li>`).join("")}</ul><h3>改进方向</h3><ul>${r.missed.map((p) => `<li>${esc(p)}</li>`).join("")}</ul><h2>个人反思</h2><p ${state.reflection ? "data-user-content" : ""}>${esc(state.reflection || "尚未填写")}</p><h2>行动记录</h2>${renderTable(
     ["时刻", "行动"],
     state.log.map((l) => [`T+${l.time}h`, l.message]),
   )}<p>剩余预算 ${state.budget}/${CASE.initialBudget}；剩余时间 ${state.hoursLeft}/${CASE.initialHours} 小时。</p></body></html>`;
@@ -638,6 +699,11 @@ function download(content, type, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 document.addEventListener("click", (event) => {
+  if (event.target.closest(".skip-link")) {
+    event.preventDefault();
+    document.querySelector("#main").focus();
+    return;
+  }
   const route = event.target.closest("[data-route]");
   if (route) return go(route.dataset.route);
   const target = event.target.closest("[data-action]");
@@ -744,15 +810,27 @@ document.addEventListener("click", (event) => {
     document.querySelector("#confirm-dialog").close();
     fn?.();
   } else if (action === "export-report" && state.decision)
-    download(reportHTML(), "text/html;charset=utf-8", "SCINTEL-调查报告.html");
+    download(
+      localizeReport(reportHTML(), language),
+      "text/html;charset=utf-8",
+      language === "en"
+        ? "SCINTEL-investigation-report.html"
+        : "SCINTEL-调查报告.html",
+    );
   else if (action === "export-json" && state.decision)
     download(
       JSON.stringify(
         {
           caseId: CASE.id,
           version: CASE.version,
+          language,
           state,
-          assessment: scoreCase(state),
+          assessment: localizeAssessment(scoreCase(state), language),
+          displayLog: state.log.map((entry) => ({
+            ...entry,
+            message: tr(entry.message),
+          })),
+          displayAnalysis: state.analysisViews.map(tr),
         },
         null,
         2,
@@ -807,16 +885,22 @@ document.addEventListener("input", (event) => {
     document.querySelector("#evidence-grid").innerHTML =
       filteredEvidence().map(evidenceCard).join("") ||
       '<p class="muted">没有符合条件的材料。</p>';
+    localizeElement(document.querySelector("#evidence-grid"), language);
   }
   if (el.id === "rationale" || el.id === "reflection") {
     update((s) => setText(s, el.id, el.value), null, false);
     if (el.id === "rationale")
-      document.querySelector("#rationale-count").textContent =
-        `${el.value.trim().length} / 20 字起`;
+      document.querySelector("#rationale-count").textContent = tr(
+        `${el.value.trim().length} / 20 字起`,
+      );
   }
 });
 document.addEventListener("change", (event) => {
   const el = event.target;
+  if (el.matches("[data-language]")) {
+    setLanguage(el.value);
+    return;
+  }
   if (el.matches("#link-form select")) {
     const fields = {
       evidence: "linkEvidenceId",

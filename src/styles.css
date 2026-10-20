@@ -1736,6 +1736,82 @@ dialog h2 {
   opacity: 1;
   transform: translate(-50%, 0);
 }
+.language-control {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+.language-control select {
+  width: 88px;
+  min-height: 32px;
+  padding: 6px 19px 6px 9px;
+  font-size: 11px;
+  background-color: #f7f9f2;
+  color: #35513c;
+}
+.topbar {
+  gap: 12px;
+}
+.topbar-actions {
+  flex-shrink: 0;
+}
+.breadcrumb {
+  min-width: 0;
+}
+.breadcrumb strong {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dialog-top {
+  gap: 12px;
+}
+.dialog-top .language-control {
+  margin-left: auto;
+}
+:lang(en) .nav-item {
+  font-size: 12px;
+  gap: 10px;
+}
+:lang(en) .nav-item small {
+  white-space: nowrap;
+  font-size: 9px;
+}
+:lang(en) .review-counts > div {
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+:lang(en) .resource strong small {
+  white-space: nowrap;
+}
+:lang(en) .radio-option strong,
+:lang(en) .review-evidence-link {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 680px) {
+  .language-control select {
+    width: 79px;
+    font-size: 10px;
+  }
+  .topbar-actions {
+    gap: 6px;
+  }
+  .topbar .avatar {
+    display: none;
+  }
+  .breadcrumb {
+    flex: 1;
+  }
+  :lang(en) .page-heading {
+    flex-wrap: wrap;
+  }
+  :lang(en) .page-heading .tag {
+    margin-top: 0;
+  }
+  :lang(en) .review-counts span {
+    display: block;
+    white-space: normal;
+  }
+}
 .investigation-result,
 .evidence-context {
   display: flex;
